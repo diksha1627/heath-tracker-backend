@@ -1,34 +1,64 @@
-from flask import Flask, request, jsonify, render_template
+from datetime import datetime, timedelta
+import os
+import pathlib
+import pickle
+import sys
+
+from bson import ObjectId
+from dotenv import load_dotenv
+from flask import Flask, request, jsonify, session, abort, redirect, render_template
 from flask_cors import CORS
 from flask_pymongo import PyMongo
-from bson import ObjectId  # Import ObjectId from bson module
-from datetime import datetime
-from dotenv import load_dotenv
-import pickle
+from google_auth_oauthlib.flow import Flow
+from google.oauth2 import id_token
+from cachecontrol import CacheControl
+import google.auth.transport.requests
+import requests
 import numpy as np
-import sys
-import os
 
 load_dotenv()
-
-filename = 'diabetes.pkl'
-classifier = pickle.load(open(filename, 'rb'))
-
 
 app = Flask(__name__)
 CORS(app)
 app.config['MONGO_URI'] = os.getenv('URL')
-mongo = PyMongo(app)
+app.secret_key = "diksha"
+app.config['SESSION_TYPE'] = 'filesystem'
+app.config['SESSION_COOKIE_SECURE'] = True
+app.config['SESSION_USE_SIGNER'] = True
+app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(days=1)
+os.environ["OAUTHLIB_INSECURE_TRANSPORT"] = "1"
 
-class DiabetesModel:
-    # Define your model fields here
-    pass
+GOOGLE_CLIENT_ID = os.getenv('GOOGLE_CLIENT_ID')
+client_secrets_file = os.path.join(pathlib.Path(__file__).parent, "./client_secret.json")
 
-# Convert ObjectId to string for JSON serialization
+def create_google_auth_flow():
+    return Flow.from_client_secrets_file(
+        client_secrets_file=client_secrets_file,
+        scopes=["https://www.googleapis.com/auth/userinfo.profile", "https://www.googleapis.com/auth/userinfo.email", "openid"],
+        redirect_uri="http://127.0.0.1:5000/callback"
+    )
+
+flow = create_google_auth_flow()
+
+filename = 'diabetes.pkl'
+classifier = pickle.load(open(filename, 'rb'))
+
 def convert_to_json(data):
     for entry in data:
         entry['_id'] = str(entry['_id'])
     return data
+
+def login_is_required(function):
+    def wrapper(*args, **kwargs):
+        if "google_id" not in session:
+            return abort(404)
+        else:
+            return function()
+    return wrapper
+
+@app.errorhandler(Exception)
+def handle_error(e):
+    return render_template('error.html', error_message=str(e))
 
 @app.route('/')
 def get_data():
@@ -36,7 +66,59 @@ def get_data():
         data = list(mongo.db.diabetes.find())
         return jsonify(convert_to_json(data)), 200
     except Exception as e:
-        return {"message": str(e)}, 400
+        return handle_error(e)
+
+@app.route('/signin')
+def signin():
+    return "Hello World <a href='/login'><button>Login</button></a>"
+
+@app.route('/login')
+def login():
+    authorization_url, state = flow.authorization_url()
+    session['state'] = state
+    session.permanent = True
+    app.permanent_session_lifetime = timedelta(days=1)
+    return redirect(authorization_url)
+
+@app.route('/callback')
+def callback():
+    try:
+        flow.fetch_token(authorization_response=request.url)
+
+        received_state = request.args["state"]
+        if "state" not in session or session["state"] not in received_state:
+            return render_template('error.html', error_message='Invalid state parameter')
+
+        credentials = flow.credentials
+        request_session = requests.Session()
+        cached_session = CacheControl(request_session)
+        token_request = google.auth.transport.requests.Request(session=cached_session)
+
+        id_info = id_token.verify_oauth2_token(
+            id_token=credentials.id_token,
+            request=token_request,
+            audience=GOOGLE_CLIENT_ID
+        )
+
+        session["google_id"] = id_info.get("sub")
+        session["name"] = id_info.get("name")
+
+        if "google_id" not in session:
+            return render_template('error.html', error_message='Invalid state parameter')
+
+        return redirect("/protected_area")
+    except Exception as e:
+        return handle_error(e)
+
+@app.route("/logout")
+def logout():
+    session.clear()
+    return redirect("/signin")
+
+@app.route("/protected_area")
+@login_is_required
+def protected_area():
+    return f"Hello {session['name']}! <br/> <a href='/logout'><button>Logout</button></a>"
 
 @app.route('/diabetes', methods=['POST'])
 def add_diabetes_data():
@@ -54,12 +136,11 @@ def add_diabetes_data():
 
         result = mongo.db.diabetes.insert_one(tracked)
         inserted_id = result.inserted_id
-        tracked['_id'] = str(inserted_id)  # Convert ObjectId to string
+        tracked['_id'] = str(inserted_id)
 
         return {"message": "Data added successfully", "data": tracked}, 200
     except Exception as e:
-        return {"message": str(e)}, 400
-    
+        return handle_error(e)
 
 @app.route('/predict', methods=['POST'])
 def predict():
@@ -79,13 +160,9 @@ def predict():
 
             prediction_list = my_prediction.tolist()
 
-            # Return the prediction as a JSON response
             return jsonify({"data": prediction_list}), 200
-
-    except:
-        ops = str(sys.exc_info())
-        return f'<h1>Oops! {ops} occurred</h1>'
-
+    except Exception as e:
+        return handle_error(e)
 
 if __name__ == '__main__':
     app.run(debug=True, port=5000)
