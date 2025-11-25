@@ -3,6 +3,7 @@ import os
 import pathlib
 import pickle
 import sys
+import json  # <-- added
 
 from bson import ObjectId
 from dotenv import load_dotenv
@@ -23,7 +24,7 @@ app = Flask(__name__)
 
 FRONTEND_ORIGIN = os.getenv("FRONTEND_ORIGIN")
 CORS(app, supports_credentials=True, resources={r"/*": {"origins": [FRONTEND_ORIGIN]}})
-app.config['MONGO_URI'] = os.getenv('URL')
+app.config['MONGO_URI'] = os.getenv('MONGO_URI')
 app.secret_key = "diksha"
 app.config['SESSION_TYPE'] = 'filesystem'
 app.config['SESSION_COOKIE_SECURE'] = True
@@ -34,9 +35,26 @@ REDIRECT_URI = os.getenv("REDIRECT_URI")
 mongo = PyMongo(app)
 
 GOOGLE_CLIENT_ID = os.getenv('GOOGLE_CLIENT_ID')
+
+# allow either env JSON or local file (no logic change elsewhere)
+CLIENT_SECRET_JSON = os.getenv("CLIENT_SECRET_JSON")
 client_secrets_file = os.path.join(pathlib.Path(__file__).parent, "./client_secret.json")
 
 def create_google_auth_flow():
+    # prefer env-provided JSON; fallback to file
+    if CLIENT_SECRET_JSON:
+        cfg = json.loads(CLIENT_SECRET_JSON)
+        if "web" not in cfg:
+            cfg = {"web": cfg}
+        return Flow.from_client_config(
+            client_config=cfg,
+            scopes=[
+                "https://www.googleapis.com/auth/userinfo.profile",
+                "https://www.googleapis.com/auth/userinfo.email",
+                "openid",
+            ],
+            redirect_uri=REDIRECT_URI
+        )
     return Flow.from_client_secrets_file(
         client_secrets_file=client_secrets_file,
         scopes=["https://www.googleapis.com/auth/userinfo.profile", "https://www.googleapis.com/auth/userinfo.email", "openid"],
@@ -72,13 +90,10 @@ def get_data():
         return jsonify(convert_to_json(data)), 200
     except Exception as e:
         return handle_error(e)
-    
-    
 
 @app.route('/signin')
 def signin():
     return "Hello World <a href='/login'><button>Login</button></a>"
-
 
 @app.route("/api/user", methods=["GET"])
 def get_logged_user():
@@ -91,11 +106,9 @@ def get_logged_user():
             "google_id": session.get("google_id"),
             "email": session.get("email"),
             "name": session.get("name"),
-            "picture": session.get("picture")   
+            "picture": session.get("picture")
         }
     }), 200
-    
-    
 
 @app.route('/login')
 def login():
@@ -127,8 +140,8 @@ def callback():
         session["google_id"] = id_info.get("sub")
         session["name"] = id_info.get("name")
         session["email"] = id_info.get("email")
-        session["picture"] = id_info.get("picture") 
-        
+        session["picture"] = id_info.get("picture")
+
         now_utc = datetime.utcnow()
         mongo.db.users.update_one(
                {"google_id": id_info.get("sub")},
@@ -150,10 +163,9 @@ def callback():
     upsert=True,
         )
 
-        # ⚡ NEW: send React a token
         token = credentials.id_token
 
-        return redirect(f"http://127.0.0.1:3000/auth/success?token={token}")
+        return redirect(f"{FRONTEND_ORIGIN}/auth/success?token={token}")
     except Exception as e:
         return handle_error(e)
 
