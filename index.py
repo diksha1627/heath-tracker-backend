@@ -31,6 +31,7 @@ app.secret_key = "diksha"
 app.config['SESSION_TYPE'] = 'filesystem'
 app.config['SESSION_COOKIE_SECURE'] = True
 app.config['SESSION_USE_SIGNER'] = True
+app.config['SESSION_COOKIE_SAMESITE'] = 'None'   # REQUIRED for cross-site cookies
 app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(days=1)
 os.environ["OAUTHLIB_INSECURE_TRANSPORT"] = "1"
 REDIRECT_URI = os.getenv("REDIRECT_URI")
