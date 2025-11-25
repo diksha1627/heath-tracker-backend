@@ -19,7 +19,10 @@ import numpy as np
 load_dotenv()
 
 app = Flask(__name__)
-CORS(app)
+
+
+FRONTEND_ORIGIN = os.getenv("FRONTEND_ORIGIN")
+CORS(app, supports_credentials=True, resources={r"/*": {"origins": [FRONTEND_ORIGIN]}})
 app.config['MONGO_URI'] = os.getenv('URL')
 app.secret_key = "diksha"
 app.config['SESSION_TYPE'] = 'filesystem'
@@ -27,6 +30,7 @@ app.config['SESSION_COOKIE_SECURE'] = True
 app.config['SESSION_USE_SIGNER'] = True
 app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(days=1)
 os.environ["OAUTHLIB_INSECURE_TRANSPORT"] = "1"
+REDIRECT_URI = os.getenv("REDIRECT_URI")
 mongo = PyMongo(app)
 
 GOOGLE_CLIENT_ID = os.getenv('GOOGLE_CLIENT_ID')
@@ -36,7 +40,7 @@ def create_google_auth_flow():
     return Flow.from_client_secrets_file(
         client_secrets_file=client_secrets_file,
         scopes=["https://www.googleapis.com/auth/userinfo.profile", "https://www.googleapis.com/auth/userinfo.email", "openid"],
-        redirect_uri="http://127.0.0.1:5000/callback"
+        redirect_uri=REDIRECT_URI
     )
 
 flow = create_google_auth_flow()
@@ -70,17 +74,28 @@ def get_data():
         return handle_error(e)
     
     
-# @app.route('/diabetes', methods=['GET'])
-# def get_diabetes_records():
-#     try:
-#         data = list(mongo.db.diabetes.find())
-#         return jsonify(convert_to_json(data)), 200
-#     except Exception as e:
-#         return handle_error(e)    
 
 @app.route('/signin')
 def signin():
     return "Hello World <a href='/login'><button>Login</button></a>"
+
+
+@app.route("/api/user", methods=["GET"])
+def get_logged_user():
+    if "google_id" not in session:
+        return jsonify({"authenticated": False}), 401
+
+    return jsonify({
+        "authenticated": True,
+        "user": {
+            "google_id": session.get("google_id"),
+            "email": session.get("email"),
+            "name": session.get("name"),
+            "picture": session.get("picture")   
+        }
+    }), 200
+    
+    
 
 @app.route('/login')
 def login():
@@ -109,14 +124,36 @@ def callback():
             request=token_request,
             audience=GOOGLE_CLIENT_ID
         )
-
         session["google_id"] = id_info.get("sub")
         session["name"] = id_info.get("name")
+        session["email"] = id_info.get("email")
+        session["picture"] = id_info.get("picture") 
+        
+        now_utc = datetime.utcnow()
+        mongo.db.users.update_one(
+               {"google_id": id_info.get("sub")},
+    {
+        # update on every login
+        "$set": {
+            "name": id_info.get("name"),
+            "email": id_info.get("email"),
+            "picture": id_info.get("picture"),
+            "email_verified": id_info.get("email_verified"),  # optional, useful
+            "updated_at": now_utc,
+        },
+        # only when creating the user
+        "$setOnInsert": {
+            "google_id": id_info.get("sub"),
+            "created_at": now_utc,
+        },
+    },
+    upsert=True,
+        )
 
         # ⚡ NEW: send React a token
         token = credentials.id_token
 
-        return redirect(f"http://localhost:3000/auth/success?token={token}")
+        return redirect(f"http://127.0.0.1:3000/auth/success?token={token}")
     except Exception as e:
         return handle_error(e)
 
@@ -133,20 +170,26 @@ def protected_area():
 @app.route('/diabetes', methods=['POST'])
 def add_diabetes_data():
     try:
+        if "google_id" not in session:
+            return jsonify({"error": "Unauthorized"}), 401
+        
         data = request.get_json()
         level = data.get('bloodSugarLevel')
         date = data.get('date')
         notes = data.get('notes')
 
         tracked = {
+            'user_google_id': session['google_id'],
+            'email': session.get('email'),
+            'name': session.get('name'),
             'bloodSugarLevel': level,
             'date': date,
-            'notes': notes
+            'notes': notes,
+            'created_at': datetime.utcnow()
         }
 
         result = mongo.db.diabetes.insert_one(tracked)
-        inserted_id = result.inserted_id
-        tracked['_id'] = str(inserted_id)
+        tracked['_id'] = str(result.inserted_id)
 
         return {"message": "Data added successfully", "data": tracked}, 200
     except Exception as e:
@@ -155,24 +198,90 @@ def add_diabetes_data():
 @app.route('/predict', methods=['POST'])
 def predict():
     try:
-        if request.method == 'POST':
-            data = request.get_json()
-            preg = data['pregnancies']
-            glucose = data['glucose']
-            bp = data['bloodpressure']
-            st = data['skinthickness']
-            insulin = data['insulin']
-            bmi = data['bmi']
-            dpf = data['dpf']
-            age = data['age']
-            data = np.array([[preg, glucose, bp, st, insulin, bmi, dpf, age]])
-            my_prediction = classifier.predict(data)
+        if "google_id" not in session:
+            return jsonify({"error": "Unauthorized"}), 401
 
-            prediction_list = my_prediction.tolist()
+        d = request.get_json(force=True) or {}
 
-            return jsonify({"data": prediction_list}), 200
+        # parse safely (raise 400 for bad input)
+        def _req(name, cast=float):
+            if name not in d:
+                raise ValueError(f"Missing field: {name}")
+            try:
+                return cast(d[name])
+            except Exception:
+                raise ValueError(f"Invalid number for: {name}")
+
+        preg = _req('pregnancies', int)
+        glucose = _req('glucose', float)
+        bp = _req('bloodpressure', float)
+        st = _req('skinthickness', float)
+        insulin = _req('insulin', float)
+        bmi = _req('bmi', float)
+        dpf = _req('dpf', float)
+        age = _req('age', int)
+
+        X = np.array([[preg, glucose, bp, st, insulin, bmi, dpf, age]])
+        y = classifier.predict(X)
+        result = int(y[0])
+
+        # persist per-user
+        doc = {
+            "user_google_id": session["google_id"],
+            "email": session.get("email"),
+            "name": session.get("name"),
+            "inputs": {
+                "pregnancies": preg,
+                "glucose": glucose,
+                "bloodpressure": bp,
+                "skinthickness": st,
+                "insulin": insulin,
+                "bmi": bmi,
+                "dpf": dpf,
+                "age": age,
+            },
+            "result": result,
+            "created_at": datetime.utcnow(),
+        }
+        ins = mongo.db.predictions.insert_one(doc)
+        saved_id = str(ins.inserted_id)
+
+        return jsonify({"data": [result], "saved": {"_id": saved_id}}), 200
+
+    except ValueError as ve:
+        return jsonify({"error": str(ve)}), 400
     except Exception as e:
         return handle_error(e)
+
+@app.route('/predict/history', methods=['GET'])
+def predict_history():
+    try:
+        if "google_id" not in session:
+            return jsonify({"error": "Unauthorized"}), 401
+        cur = mongo.db.predictions.find({"user_google_id": session["google_id"]}).sort("created_at", -1)
+        items = []
+        for d in cur:
+            d["_id"] = str(d["_id"])
+            items.append(d)
+        return jsonify({"items": items}), 200
+    except Exception as e:
+        return handle_error(e)
+
+
+@app.route('/diabetes', methods=['GET'])
+def get_diabetes_data():
+    try:
+        if "google_id" not in session:
+            return jsonify({"error": "Unauthorized"}), 401
+        cursor = mongo.db.diabetes.find({"user_google_id": session["google_id"]}).sort("created_at", -1)
+        items = []
+        for d in cursor:
+            d["_id"] = str(d["_id"])
+            items.append(d)
+        return jsonify(items), 200
+    except Exception as e:
+        return handle_error(e)
+
 
 if __name__ == '__main__':
     app.run(debug=True, port=5000)
