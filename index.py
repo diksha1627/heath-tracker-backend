@@ -23,7 +23,13 @@ app = Flask(__name__)
 
 
 FRONTEND_ORIGIN = os.getenv("FRONTEND_ORIGIN")
-CORS(app, supports_credentials=True, resources={r"/*": {"origins": [FRONTEND_ORIGIN]}})
+CORS(
+    app,
+    supports_credentials=True,
+    resources={r"/*": {"origins": [FRONTEND_ORIGIN]}},  # keep your exact frontend origin
+    methods=["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Content-Type", "Authorization"],
+)
 app.config['MONGO_URI'] = os.getenv('MONGO_URI')
 app.secret_key = "diksha"
 app.config['SESSION_TYPE'] = 'filesystem'
