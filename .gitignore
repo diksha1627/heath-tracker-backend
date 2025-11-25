@@ -1,6 +1,36 @@
+# --- Python ---
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.pkl
+*.sqlite3
+
+# --- Virtual environment ---
+venv/
+env/
+
+# --- Environment variables ---
 .env
+*.env
 
-node_modules
+# --- Flask session files ---
+instance/
+.flask_session/
 
-
+# --- OAuth Secrets ---
 client_secret.json
+
+# --- OS / Editor files ---
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# --- Logs ---
+*.log
+
+# --- Build artifacts ---
+dist/
+build/

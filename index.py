@@ -27,6 +27,7 @@ app.config['SESSION_COOKIE_SECURE'] = True
 app.config['SESSION_USE_SIGNER'] = True
 app.config['PERMANENT_SESSION_LIFETIME'] = timedelta(days=1)
 os.environ["OAUTHLIB_INSECURE_TRANSPORT"] = "1"
+mongo = PyMongo(app)
 
 GOOGLE_CLIENT_ID = os.getenv('GOOGLE_CLIENT_ID')
 client_secrets_file = os.path.join(pathlib.Path(__file__).parent, "./client_secret.json")
@@ -67,6 +68,15 @@ def get_data():
         return jsonify(convert_to_json(data)), 200
     except Exception as e:
         return handle_error(e)
+    
+    
+# @app.route('/diabetes', methods=['GET'])
+# def get_diabetes_records():
+#     try:
+#         data = list(mongo.db.diabetes.find())
+#         return jsonify(convert_to_json(data)), 200
+#     except Exception as e:
+#         return handle_error(e)    
 
 @app.route('/signin')
 def signin():
@@ -103,10 +113,10 @@ def callback():
         session["google_id"] = id_info.get("sub")
         session["name"] = id_info.get("name")
 
-        if "google_id" not in session:
-            return render_template('error.html', error_message='Invalid state parameter')
+        # ⚡ NEW: send React a token
+        token = credentials.id_token
 
-        return redirect("/protected_area")
+        return redirect(f"http://localhost:3000/auth/success?token={token}")
     except Exception as e:
         return handle_error(e)
 

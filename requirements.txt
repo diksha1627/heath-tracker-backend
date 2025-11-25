@@ -1,0 +1,11 @@
+Flask==3.0.3
+Flask-Cors==5.0.0
+Flask-PyMongo==2.3.0
+python-dotenv==1.0.1
+bson==0.5.10
+google-auth==2.35.0
+google-auth-oauthlib==1.2.1
+requests==2.32.3
+cachecontrol==0.14.0
+numpy==2.1.2
+scikit-learn==1.5.2
